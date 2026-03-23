@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  lp-rebalancer:
+    build: .
+    container_name: lp-rebalancer
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+    networks:
+      - lp-network
+
+networks:
+  lp-network:
+    driver: bridge
