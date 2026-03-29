@@ -1,0 +1,18 @@
+services:
+  lp-rebalancer:
+    expose:
+      - "5173"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-public"
+      - "traefik.http.routers.lp-rebalancer.rule=Host(`www.umurb.com`) || Host(`umurb.com`)"
+      - "traefik.http.routers.lp-rebalancer.entrypoints=http"
+      - "traefik.http.routers.lp-rebalancer.middlewares=secureHeaders"
+      - "traefik.http.services.lp-rebalancer.loadbalancer.server.port=5173"
+    networks:
+      - lp-network
+      - traefik-public
+
+networks:
+  traefik-public:
+    external: true
