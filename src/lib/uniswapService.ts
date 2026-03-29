@@ -314,10 +314,13 @@ export async function calculateTotalValue(positions: PositionDetails[]): Promise
   const activePositions = positions.filter(hasExposure);
 
   if (activePositions.length === 0) {
+    const prices = await getTokenPrices([UNISWAP_V3_ADDRESSES.weth]);
+    const ethPrice = prices.get(UNISWAP_V3_ADDRESSES.weth.toLowerCase())?.usd ?? 0;
+
     return {
       positions: [],
       totals: { usdc: 0, eth: 0 },
-      ethUsdPrice: 0,
+      ethUsdPrice: ethPrice,
     };
   }
 

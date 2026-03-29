@@ -1,13 +1,8 @@
 import { UNISWAP_V3_ADDRESSES } from "./constants";
-import { buildUniswapV3Plan } from "./rebalancer";
 import type { ValuedPosition, WalletHoldingsSummary } from "./uniswapService";
-
-export type PoolKind = "fee" | "base" | "drop" | "peak";
-export type RebalanceTrigger = "none" | "fee_out_of_range" | "base_out_of_range";
 
 export interface ClassifiedPosition {
 	tokenId: string;
-	poolKind: PoolKind | "unclassified";
 	inRange: boolean;
 	feeTier: number;
 	tickLower: number;
@@ -18,30 +13,11 @@ export interface ClassifiedPosition {
 	widthTicks: number;
 	ethAmount: number;
 	usdcAmount: number;
+	feesUsdc: number;
 }
-
-export interface PoolSuggestion {
-	kind: PoolKind;
-	name: string;
-	minRange: number;
-	maxRange: number;
-	targetEthWorth: number;
-	ethNeeded: number;
-	usdcNeeded: number;
-	usdcPerEthRatio: number;
-}
-
 export interface PoolMonitorResult {
-	trigger: RebalanceTrigger;
 	message: string;
 	positions: ClassifiedPosition[];
-	suggestions: PoolSuggestion[];
-}
-
-interface IndexedPosition {
-	index: number;
-	position: ValuedPosition;
-	widthTicks: number;
 }
 
 interface Exposure {
@@ -125,119 +101,18 @@ function getPositionExposure(position: ValuedPosition): Exposure {
 	return { ethAmount, usdcAmount };
 }
 
-function createSuggestionMap(summary: WalletHoldingsSummary, neutralTolerance: number): Map<PoolKind, PoolSuggestion> {
-	const spot = summary.spot;
-	if (!Number.isFinite(spot) || spot <= 0) {
-		return new Map();
-	}
-
-	const plan = buildUniswapV3Plan({
-		currentEth: summary.holdings.eth,
-		currentUsdc: summary.holdings.usdc,
-		spot,
-		neutralTolerance,
-	});
-
-	const byName: Record<string, PoolKind> = {
-		"Fee Pool": "fee",
-		"Base Pool": "base",
-		"Drop Pool": "drop",
-		"Peak Pool": "peak",
-	};
-
-	return new Map(
-		plan.pools
-			.filter((pool) => byName[pool.name] !== undefined)
-			.map((pool) => {
-				const kind = byName[pool.name];
-				const usdcPerEthRatio = pool.ethNeeded > 0 ? pool.usdcNeeded / pool.ethNeeded : 0;
-
-				return [
-					kind,
-					{
-						kind,
-						name: pool.name,
-						minRange: pool.minRange,
-						maxRange: pool.maxRange,
-						targetEthWorth: pool.targetEthWorth,
-						ethNeeded: pool.ethNeeded,
-						usdcNeeded: pool.usdcNeeded,
-						usdcPerEthRatio,
-					},
-				] as const;
-			}),
-	);
+function getAccumulatedFeesUsdc(position: ValuedPosition): number {
+	return position.fees.token0 * position.valuation.token0Price.usd + position.fees.token1 * position.valuation.token1Price.usd;
 }
 
-function classifyPools(positions: ValuedPosition[]): Map<number, PoolKind> {
-	const below: IndexedPosition[] = [];
-	const above: IndexedPosition[] = [];
-	const around: IndexedPosition[] = [];
-
-	positions.forEach((position, index) => {
-		const widthTicks = Math.max(position.tickUpper - position.tickLower, 0);
-		const indexed: IndexedPosition = { index, position, widthTicks };
-
-		if (position.tickUpper <= position.currentTick) {
-			below.push(indexed);
-			return;
-		}
-
-		if (position.tickLower > position.currentTick) {
-			above.push(indexed);
-			return;
-		}
-
-		around.push(indexed);
-	});
-
-	around.sort((a, b) => a.widthTicks - b.widthTicks);
-	below.sort((a, b) => b.position.tickUpper - a.position.tickUpper);
-	above.sort((a, b) => a.position.tickLower - b.position.tickLower);
-
-	const classification = new Map<number, PoolKind>();
-
-	if (around[0]) classification.set(around[0].index, "fee");
-	if (around[1]) classification.set(around[1].index, "base");
-	if (below[0]) classification.set(below[0].index, "drop");
-	if (above[0]) classification.set(above[0].index, "peak");
-
-	return classification;
-}
-
-function selectTrigger(positions: ClassifiedPosition[]): RebalanceTrigger {
-	const basePool = positions.find((position) => position.poolKind === "base");
-	if (basePool && !basePool.inRange) {
-		return "base_out_of_range";
-	}
-
-	const feePool = positions.find((position) => position.poolKind === "fee");
-	if (feePool && !feePool.inRange) {
-		return "fee_out_of_range";
-	}
-
-	return "none";
-}
-
-function hasClearFourPoolClassification(positions: ClassifiedPosition[]): boolean {
-	if (positions.length !== 4) {
-		return false;
-	}
-
-	const kinds = new Set<PoolKind | "unclassified">(positions.map((position) => position.poolKind));
-	return kinds.has("fee") && kinds.has("base") && kinds.has("drop") && kinds.has("peak") && !kinds.has("unclassified");
-}
-
-export function evaluatePoolRebalance(summary: WalletHoldingsSummary, neutralTolerance: number): PoolMonitorResult {
-	const poolKindsByIndex = classifyPools(summary.positions);
-
-	const classifiedPositions: ClassifiedPosition[] = summary.positions.map((position, index) => {
+export function evaluatePoolRebalance(summary: WalletHoldingsSummary): PoolMonitorResult {
+	const classifiedPositions: ClassifiedPosition[] = summary.positions.map((position) => {
 		const exposure = getPositionExposure(position);
 		const usdRange = getUsdRangeFromTicks(position);
+		const feesUsdc = getAccumulatedFeesUsdc(position);
 
 		return {
 			tokenId: position.tokenId,
-			poolKind: poolKindsByIndex.get(index) ?? "unclassified",
 			inRange: position.inRange,
 			feeTier: position.fee,
 			tickLower: position.tickLower,
@@ -248,50 +123,12 @@ export function evaluatePoolRebalance(summary: WalletHoldingsSummary, neutralTol
 			widthTicks: Math.max(position.tickUpper - position.tickLower, 0),
 			ethAmount: exposure.ethAmount,
 			usdcAmount: exposure.usdcAmount,
+			feesUsdc,
 		};
 	});
 
-	const trigger = selectTrigger(classifiedPositions);
-	const suggestionMap = createSuggestionMap(summary, neutralTolerance);
-	const clearFourPoolSetup = hasClearFourPoolClassification(classifiedPositions);
-
-	if (!clearFourPoolSetup) {
-		return {
-			trigger: "base_out_of_range",
-			message:
-				"Could not clearly identify all 4 pools (fee/base/drop/peak). Assuming base setup needs readjustment and suggesting full pool setup below.",
-			positions: classifiedPositions,
-			suggestions: ["fee", "base", "drop", "peak"]
-				.map((kind) => suggestionMap.get(kind as PoolKind))
-				.filter(Boolean) as PoolSuggestion[],
-		};
-	}
-
-	if (trigger === "fee_out_of_range") {
-		const feeSuggestion = suggestionMap.get("fee");
-		return {
-			trigger,
-			message:
-				"Fee pool is out of range. Reposition only the fee pool using the suggested range and ETH/USDC split below.",
-			positions: classifiedPositions,
-			suggestions: feeSuggestion ? [feeSuggestion] : [],
-		};
-	}
-
-	if (trigger === "base_out_of_range") {
-		return {
-			trigger,
-			message:
-				"Base pool is out of range. Rebalance all pools using the suggested ranges and ETH/USDC ratios below.",
-			positions: classifiedPositions,
-			suggestions: ["fee", "base", "drop", "peak"].map((kind) => suggestionMap.get(kind as PoolKind)).filter(Boolean) as PoolSuggestion[],
-		};
-	}
-
 	return {
-		trigger: "none",
-		message: "No readjustment required. All key pools are in range or no trigger pool is out of range.",
+		message: "Wallet positions loaded. Use Plan All Pool Deposits to generate the 4-pool target allocation.",
 		positions: classifiedPositions,
-		suggestions: [],
 	};
 }

@@ -1,17 +1,10 @@
 import { useMemo, useState } from "react";
-import InputForm, { type InputValues } from "./components/InputForm";
+import InputForm from "./components/InputForm";
 import Results from "./components/Results";
-import { APP_CONFIG } from "./config";
 import { evaluatePoolRebalance } from "./lib/poolMonitor";
-import { buildUniswapV3Plan } from "./lib/rebalancer";
+import { buildUniswapV3Plan, sizeFeePoolFromWallet, type FeePoolSizing } from "./lib/rebalancer";
 import { loadWalletHoldings, type WalletHoldingsSummary } from "./lib/uniswapService";
 import "./App.css";
-
-const DEFAULTS: InputValues = {
-  currentEth: "",
-  currentUsdc: "",
-  spot: "",
-};
 
 type LookupState = "idle" | "loading" | "success" | "error";
 export type WalletKey = "wallet1" | "wallet2";
@@ -27,16 +20,13 @@ const WALLET_OPTIONS: Record<WalletKey, { label: string; address: string }> = {
   },
 };
 
-function formatInput(value: number, decimals: number): string {
-  return value.toFixed(decimals).replace(/\.0+$|(?<=\.[0-9]*?)0+$/u, "").replace(/\.$/u, "");
-}
-
 export default function App() {
-  const [inputs, setInputs] = useState<InputValues>(DEFAULTS);
   const [selectedWallet, setSelectedWallet] = useState<WalletKey>("wallet1");
   const [lookupState, setLookupState] = useState<LookupState>("idle");
   const [lookupMessage, setLookupMessage] = useState<string | null>(null);
   const [lookupSummary, setLookupSummary] = useState<WalletHoldingsSummary | null>(null);
+  const [showRebalance, setShowRebalance] = useState(false);
+  const [showFeePosition, setShowFeePosition] = useState(false);
 
   async function handleLoadPositions() {
     const wallet = WALLET_OPTIONS[selectedWallet];
@@ -56,14 +46,11 @@ export default function App() {
         filteredOut: summary.totalPositionCount - summary.activePositionCount,
       });
 
-      setInputs((current) => ({
-        currentEth: formatInput(summary.holdings.eth, 6),
-        currentUsdc: formatInput(summary.holdings.usdc, 2),
-        spot: summary.spot > 0 ? formatInput(summary.spot, 2) : current.spot,
-      }));
       setLookupSummary(summary);
       setLookupState("success");
       setLookupMessage(null);
+      setShowRebalance(false);
+      setShowFeePosition(false);
     } catch (error) {
       setLookupState("error");
       setLookupSummary(null);
@@ -72,11 +59,13 @@ export default function App() {
   }
 
   const result = useMemo(() => {
-    const eth = parseFloat(inputs.currentEth);
-    const usdc = parseFloat(inputs.currentUsdc);
-    const spot = parseFloat(inputs.spot);
+    if (!lookupSummary) return null;
 
-    if ([eth, usdc, spot].some((v) => isNaN(v) || v < 0)) return null;
+    const eth = lookupSummary.breakdown.wallet.eth;
+    const usdc = lookupSummary.breakdown.wallet.usdc;
+    const spot = lookupSummary.spot;
+
+    if ([eth, usdc, spot].some((v) => !Number.isFinite(v) || v < 0)) return null;
     if (spot <= 0) return null;
 
     try {
@@ -84,17 +73,31 @@ export default function App() {
         currentEth: eth,
         currentUsdc: usdc,
         spot,
-        neutralTolerance: APP_CONFIG.neutralTolerance,
       });
     } catch {
       return null;
     }
-  }, [inputs]);
+  }, [lookupSummary]);
 
   const monitor = useMemo(() => {
     if (!lookupSummary) return null;
-    return evaluatePoolRebalance(lookupSummary, APP_CONFIG.neutralTolerance);
+    return evaluatePoolRebalance(lookupSummary);
   }, [lookupSummary]);
+
+  const feePositionResult = useMemo((): FeePoolSizing | null => {
+    if (!lookupSummary || !showFeePosition) return null;
+    const spot = lookupSummary.spot;
+    if (spot <= 0) return null;
+    try {
+      return sizeFeePoolFromWallet({
+        walletEth: lookupSummary.breakdown.wallet.eth,
+        walletUsdc: lookupSummary.breakdown.wallet.usdc,
+        spot,
+      });
+    } catch {
+      return null;
+    }
+  }, [lookupSummary, showFeePosition]);
 
   return (
     <div className="app">
@@ -111,6 +114,15 @@ export default function App() {
             lookupState={lookupState}
             lookupMessage={lookupMessage}
             walletOptions={WALLET_OPTIONS}
+            walletBalances={lookupSummary ? {
+              eth: lookupSummary.breakdown.wallet.eth,
+              usdc: lookupSummary.breakdown.wallet.usdc,
+            } : null}
+            showRebalance={showRebalance}
+            onRebalance={() => setShowRebalance(true)}
+            showFeePosition={showFeePosition}
+            onSizeFeePosition={() => setShowFeePosition(true)}
+            feePositionResult={feePositionResult}
           />
         </aside>
         <section className="content">
@@ -118,9 +130,11 @@ export default function App() {
             <Results
               plan={result}
               monitor={monitor}
-              walletBalances={{
-                eth: lookupSummary.breakdown.wallet.eth,
-                usdc: lookupSummary.breakdown.wallet.usdc,
+              showRebalance={showRebalance}
+              totalHoldings={{
+                eth: lookupSummary.holdings.eth,
+                usdc: lookupSummary.holdings.usdc,
+                spot: lookupSummary.spot,
               }}
             />
           ) : (

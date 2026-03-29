@@ -11,6 +11,24 @@ export interface PoolResult {
   usdcNeeded: number;
 }
 
+export interface FeePoolSizing {
+  spot: number;
+  rangeMin: number;
+  rangeMax: number;
+  state: PoolState;
+  targetPosition: {
+    eth: number;
+    usdc: number;
+  };
+  rebalance: {
+    sellEth: number;
+    buyEth: number;
+    sellUsdc: number;
+    buyUsdc: number;
+    message: string;
+  };
+}
+
 export interface RebalancePlan {
   posture: Posture;
   totalEthWorth: number;
@@ -35,7 +53,6 @@ interface BuildParams {
   currentEth: number;
   currentUsdc: number;
   spot: number;
-  neutralTolerance?: number;
 }
 
 const round = (n: number, d = 2): number => Number(n.toFixed(d));
@@ -76,7 +93,6 @@ export function buildUniswapV3Plan({
   currentEth,
   currentUsdc,
   spot,
-  neutralTolerance = 0.25,
 }: BuildParams): RebalancePlan {
   if (spot <= 0) throw new Error("Spot price must be > 0");
   if (currentEth < 0 || currentUsdc < 0) throw new Error("Current holdings cannot be negative");
@@ -84,9 +100,9 @@ export function buildUniswapV3Plan({
   const totalEthWorth = currentEth + currentUsdc / spot;
 
   let posture: Posture;
-  if (totalEthWorth > 32 + neutralTolerance) {
+  if (totalEthWorth > 32) {
     posture = "SELL MODE";
-  } else if (totalEthWorth < 32 - neutralTolerance) {
+  } else if (totalEthWorth < 32) {
     posture = "ACCUMULATE MODE";
   } else {
     posture = "NEUTRAL";
@@ -141,7 +157,7 @@ export function buildUniswapV3Plan({
   } else if (Math.abs(ethDelta) < 0.00001 && Math.abs(usdcDelta) < 0.05) {
     rebalanceMessage = "No conversion needed";
   } else {
-    rebalanceMessage = "Holdings do not reconcile cleanly; check rounding, posture tolerance, or pool assumptions";
+    rebalanceMessage = "Holdings do not reconcile cleanly; check rounding or pool assumptions";
   }
 
   return {
@@ -161,6 +177,67 @@ export function buildUniswapV3Plan({
       ethDelta: round(ethDelta, 6),
       usdcDelta: round(usdcDelta, 2),
       message: rebalanceMessage,
+    },
+  };
+}
+
+export function sizeFeePoolFromWallet({
+  walletEth,
+  walletUsdc,
+  spot,
+}: {
+  walletEth: number;
+  walletUsdc: number;
+  spot: number;
+}): FeePoolSizing {
+  if (spot <= 0) throw new Error("Spot price must be > 0");
+
+  const rangeMin = spot * 0.95;
+  const rangeMax = spot * 1.05;
+
+  if (!(rangeMin < spot && spot < rangeMax)) {
+    throw new Error("Spot price must be inside the fee pool range.");
+  }
+
+  const sqrtP = Math.sqrt(spot);
+  const sqrtPa = Math.sqrt(rangeMin);
+  const sqrtPb = Math.sqrt(rangeMax);
+
+  const token0PerLiquidity = (sqrtPb - sqrtP) / (sqrtP * sqrtPb);
+  const token1PerLiquidity = sqrtP - sqrtPa;
+  const totalValueUsdc = walletEth * spot + walletUsdc;
+  const liquidity = totalValueUsdc / (spot * token0PerLiquidity + token1PerLiquidity);
+
+  const targetEth = liquidity * token0PerLiquidity;
+  const targetUsdc = liquidity * token1PerLiquidity;
+
+  const sellEth = Math.max(0, walletEth - targetEth);
+  const buyEth = Math.max(0, targetEth - walletEth);
+  const sellUsdc = Math.max(0, walletUsdc - targetUsdc);
+  const buyUsdc = Math.max(0, targetUsdc - walletUsdc);
+
+  let message = "No rebalance swap needed.";
+  if (sellEth > 0) {
+    message = `Swap first: SELL ${round(sellEth, 3)} ETH for about ${round(buyUsdc, 2)} USDC`;
+  } else if (sellUsdc > 0) {
+    message = `Swap first: SELL ${round(sellUsdc, 2)} USDC for about ${round(buyEth, 3)} ETH`;
+  }
+
+  return {
+    spot: round(spot, 2),
+    rangeMin: round(rangeMin, 2),
+    rangeMax: round(rangeMax, 2),
+    state: "in_range",
+    targetPosition: {
+      eth: round(targetEth, 8),
+      usdc: round(targetUsdc, 2),
+    },
+    rebalance: {
+      sellEth: round(sellEth, 8),
+      buyEth: round(buyEth, 8),
+      sellUsdc: round(sellUsdc, 2),
+      buyUsdc: round(buyUsdc, 2),
+      message,
     },
   };
 }
