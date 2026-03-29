@@ -1,0 +1,12 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+RUN chmod +x /app/scripts/start-snapshot-cron.sh
+
+CMD ["/app/scripts/start-snapshot-cron.sh"]

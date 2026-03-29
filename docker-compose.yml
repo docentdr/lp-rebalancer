@@ -10,6 +10,19 @@ services:
     networks:
       - lp-network
 
+  snapshot-cron:
+    build:
+      context: .
+      dockerfile: Dockerfile.snapshot
+    container_name: lp-rebalancer-snapshot-cron
+    restart: unless-stopped
+    environment:
+      SNAPSHOT_CRON_SCHEDULE: "5 0 * * *"
+    volumes:
+      - ./data/snapshots:/app/data/snapshots
+    networks:
+      - lp-network
+
 networks:
   lp-network:
     driver: bridge
