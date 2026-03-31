@@ -3,26 +3,33 @@ version: "3.8"
 services:
   lp-rebalancer:
     build: .
-    container_name: lp-rebalancer
-    ports:
-      - "5173:5173"
     restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - "traefik.http.routers.lp-rebalancer.rule=Host(`umurb.com`) || Host(`www.umurb.com`)"
+      - traefik.http.routers.lp-rebalancer.entrypoints=http
+      - traefik.http.routers.lp-rebalancer.middlewares=secureHeaders
+      - traefik.http.services.lp-rebalancer.loadbalancer.server.port=5173
     networks:
-      - lp-network
+      - proxy
+      - lp-internal
 
   snapshot-cron:
     build:
       context: .
       dockerfile: Dockerfile.snapshot
-    container_name: lp-rebalancer-snapshot-cron
     restart: unless-stopped
     environment:
       SNAPSHOT_CRON_SCHEDULE: "5 0 * * *"
     volumes:
       - ./data/snapshots:/app/data/snapshots
     networks:
-      - lp-network
+      - lp-internal
 
 networks:
-  lp-network:
+  proxy:
+    external: true
+    name: proxy
+  lp-internal:
     driver: bridge
