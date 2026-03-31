@@ -25,3 +25,4 @@ data/snapshots/
 *.njsproj
 *.sln
 *.sw?
+deploy
